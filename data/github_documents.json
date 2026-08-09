@@ -1,0 +1,30 @@
+[
+  {
+    "id": "github_commit_3e885cb6b0bb9a4c3c91535bb5cb52bcc2182495",
+    "source": "github",
+    "type": "commit",
+    "title": "feat: add authenticated GitHub repository integration",
+    "content": "feat: add authenticated GitHub repository integration",
+    "author": "AmeySomade",
+    "created_at": "2026-08-08T15:55:02Z",
+    "updated_at": "2026-08-08T15:55:02Z",
+    "url": "https://github.com/AmeySomade/Project-Pulse-AI/commit/3e885cb6b0bb9a4c3c91535bb5cb52bcc2182495",
+    "metadata": {
+      "sha": "3e885cb6b0bb9a4c3c91535bb5cb52bcc2182495"
+    }
+  },
+  {
+    "id": "github_commit_12e54b035b6787ccc7629f83457a499327ccffa8",
+    "source": "github",
+    "type": "commit",
+    "title": "docs: define ProjectPulse architecture and MVP scope",
+    "content": "docs: define ProjectPulse architecture and MVP scope",
+    "author": "AmeySomade",
+    "created_at": "2026-08-07T15:59:35Z",
+    "updated_at": "2026-08-07T15:59:35Z",
+    "url": "https://github.com/AmeySomade/Project-Pulse-AI/commit/12e54b035b6787ccc7629f83457a499327ccffa8",
+    "metadata": {
+      "sha": "12e54b035b6787ccc7629f83457a499327ccffa8"
+    }
+  }
+]

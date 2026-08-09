@@ -1,91 +1,144 @@
 import os
-
 import requests
 from dotenv import load_dotenv
 
 
+# Load variables from .env
 load_dotenv()
 
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_OWNER = os.getenv("GITHUB_OWNER")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-class GitHubClient:
-    def __init__(self):
-        self.token = os.getenv("GITHUB_TOKEN")
-        self.owner = os.getenv("GITHUB_OWNER")
-        self.repo = os.getenv("GITHUB_REPO")
+BASE_URL = "https://api.github.com"
 
-        if not self.token:
-            raise ValueError("GITHUB_TOKEN is missing in .env")
+HEADERS = {
+    "Accept": "application/vnd.github+json",
+    "Authorization": f"Bearer {GITHUB_TOKEN}",
+    "X-GitHub-Api-Version": "2026-03-10",
+}
 
-        if not self.owner:
-            raise ValueError("GITHUB_OWNER is missing in .env")
 
-        if not self.repo:
-            raise ValueError("GITHUB_REPO is missing in .env")
+def github_get(endpoint, params=None):
+    """
+    Send a GET request to the GitHub API.
+    """
 
-        self.base_url = "https://api.github.com"
+    url = f"{BASE_URL}{endpoint}"
 
-        self.headers = {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.token}",
-            "X-GitHub-Api-Version": "2026-03-10",
-        }
+    response = requests.get(
+        url,
+        headers=HEADERS,
+        params=params,
+        timeout=30,
+    )
 
-    def get_repository(self):
-        url = f"{self.base_url}/repos/{self.owner}/{self.repo}"
+    response.raise_for_status()
 
-        try:
-            response = requests.get(
-                url,
-                headers=self.headers,
-                timeout=10,
-            )
+    return response
 
-            response.raise_for_status()
-            return response.json()
 
-        except requests.exceptions.HTTPError as error:
-            status_code = error.response.status_code
+def get_paginated_data(endpoint, params=None):
+    """
+    Retrieve all pages of results from a GitHub API endpoint.
+    """
 
-            if status_code == 401:
-                raise RuntimeError(
-                    "Authentication failed. Check your GitHub token."
-                ) from None
+    if params is None:
+        params = {}
 
-            if status_code == 403:
-                raise RuntimeError(
-                    "GitHub denied access. Check token permissions."
-                ) from None
+    params["per_page"] = 100
 
-            if status_code == 404:
-                raise RuntimeError(
-                    "Repository not found. Check GITHUB_OWNER and GITHUB_REPO."
-                ) from None
+    all_items = []
+    page = 1
 
-            raise RuntimeError(
-                f"GitHub API returned HTTP {status_code}."
-            ) from None
+    while True:
+        params["page"] = page
 
-        except requests.exceptions.Timeout:
-            raise RuntimeError(
-                "GitHub API request timed out."
-            ) from None
+        response = github_get(endpoint, params=params)
 
-        except requests.exceptions.ConnectionError:
-            raise RuntimeError(
-                "Could not connect to GitHub API."
-            ) from None
+        items = response.json()
+
+        all_items.extend(items)
+
+        if len(items) < 100:
+            break
+
+        page += 1
+
+    return all_items
+
+
+def get_repository():
+    """
+    Fetch basic repository information.
+    """
+
+    endpoint = f"/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+
+    return github_get(endpoint).json()
+
+
+def get_issues():
+    """
+    Fetch repository issues.
+
+    GitHub's Issues API can also return pull requests,
+    so pull requests are filtered out here.
+    """
+
+    endpoint = f"/repos/{GITHUB_OWNER}/{GITHUB_REPO}/issues"
+
+    items = get_paginated_data(
+        endpoint,
+        params={"state": "all"},
+    )
+
+    issues = [
+        item
+        for item in items
+        if "pull_request" not in item
+    ]
+
+    return issues
+
+
+def get_pull_requests():
+    """
+    Fetch repository pull requests.
+    """
+
+    endpoint = f"/repos/{GITHUB_OWNER}/{GITHUB_REPO}/pulls"
+
+    return get_paginated_data(
+        endpoint,
+        params={"state": "all"},
+    )
+
+
+def get_commits():
+    """
+    Fetch repository commits.
+    """
+
+    endpoint = f"/repos/{GITHUB_OWNER}/{GITHUB_REPO}/commits"
+
+    return get_paginated_data(endpoint)
 
 
 if __name__ == "__main__":
-    client = GitHubClient()
-    repository = client.get_repository()
 
-    print("\nGitHub connection successful!")
-    print("-" * 40)
-    print(f"Repository : {repository['full_name']}")
-    print(f"Private    : {repository['private']}")
-    print(f"Branch     : {repository['default_branch']}")
-    print(f"Language   : {repository['language']}")
-    print(f"Stars      : {repository['stargazers_count']}")
-    print(f"Open issues: {repository['open_issues_count']}")
-    print(f"URL        : {repository['html_url']}")
+    print("Testing GitHub data connector...\n")
+
+    repo = get_repository()
+
+    print(f"Repository: {repo['full_name']}")
+
+    issues = get_issues()
+    pull_requests = get_pull_requests()
+    commits = get_commits()
+
+    print(f"Issues found: {len(issues)}")
+    print(f"Pull requests found: {len(pull_requests)}")
+    print(f"Commits found: {len(commits)}")
+
+    print("\nGitHub ingestion test successful.")

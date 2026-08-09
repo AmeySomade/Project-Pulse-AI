@@ -120,3 +120,54 @@ Phase 1A successfully establishes the first live external-system integration for
 
 ProjectPulse can now communicate with GitHub programmatically instead of operating only on static/local data.
 
+## 2026-08-09 — GitHub Data Ingestion Pipeline
+
+### Goal
+
+Build the first production-style data ingestion pipeline for ProjectPulse using live GitHub repository activity.
+
+### Completed
+
+* Extended the GitHub API client to retrieve:
+
+  * Issues
+  * Pull requests
+  * Commits
+* Added pagination support for GitHub API responses.
+* Added filtering so pull requests returned through the Issues API are not duplicated.
+* Built a normalization layer that converts different GitHub objects into a common ProjectPulse document schema.
+* Added JSON persistence for normalized documents.
+* Added loading support for previously ingested documents.
+* Created automated ingestion tests.
+
+### Current Data
+
+* Issues ingested: 0
+* Pull requests ingested: 0
+* Commits ingested: 2
+* Total normalized documents: 2
+
+### Validation
+
+Automated tests:
+
+* Document existence test — PASS
+* Standard schema validation — PASS
+* Unique document ID validation — PASS
+* Storage round-trip validation — PASS
+
+Result: **4/4 tests passed**
+
+### Design Decisions
+
+ProjectPulse stores normalized documents instead of directly using raw GitHub API responses. This provides a common internal schema that future retrieval, embedding, filtering, citation, and additional connector layers can consume without depending on GitHub-specific JSON structures.
+
+Automated tests do not repeatedly call the live GitHub API. Live connectivity was verified separately, while deterministic local tests validate the ingestion contract and persistence layer.
+
+### Issues / Learnings
+
+GitHub's Issues API can also include pull requests. Pull request objects are therefore filtered from issue results and retrieved separately through the Pull Requests endpoint to avoid duplicate documents.
+
+### Next
+
+Build the retrieval/indexing layer over the normalized ProjectPulse documents.
