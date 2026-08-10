@@ -171,3 +171,72 @@ GitHub's Issues API can also include pull requests. Pull request objects are the
 ### Next
 
 Build the retrieval/indexing layer over the normalized ProjectPulse documents.
+
+@"
+
+## 2026-08-10 - Semantic Retrieval Baseline
+
+### Goal
+Build the first RAG retrieval layer for ProjectPulse using normalized GitHub project data.
+
+### Implemented
+- Added document chunking with configurable chunk size and overlap.
+- Preserved GitHub metadata across chunks.
+- Added local semantic embeddings using sentence-transformers/all-MiniLM-L6-v2.
+- Added persistent vector storage using ChromaDB.
+- Added natural-language semantic retrieval.
+- Added retrieval evaluation using Hit@1 and Mean Reciprocal Rank (MRR).
+- Cached the embedding model to avoid loading model weights for every query.
+
+### Architecture
+GitHub API -> Normalization -> Chunking -> Embeddings -> ChromaDB -> Semantic Retriever
+
+### Retrieval Baseline
+Evaluation queries: 4
+Indexed documents: 2
+Indexed chunks: 2
+Embedding dimensions: 384
+
+Correct at Rank 1: 4/4
+Hit@1: 1.000
+MRR: 1.000
+
+This is a development sanity baseline only because the current corpus contains just two GitHub documents. It should not be interpreted as 100% production retrieval accuracy.
+
+### Retrieval Distances
+- GitHub integration query: 0.3019
+- Architecture query: 0.2593
+- MVP scope query: 0.1370
+- Authenticated repository access query: 0.4137
+
+### Testing
+- Chunking tests: 4/4 passed
+- Existing ingestion tests: 4/4 passed
+- Full regression suite: 8/8 passed
+
+### Issue Encountered
+Python imports initially failed with:
+ModuleNotFoundError: No module named 'src'
+
+Cause:
+The project uses a src-layout, but modules were being executed/imported as though src itself were the Python package.
+
+Fix:
+Standardized imports around the projectpulse package and executed modules with:
+
+`$env:PYTHONPATH="src"`
+`python -m projectpulse.<module>`
+
+### Performance Improvement
+During the first retrieval evaluation, Sentence Transformer model weights were loaded once for every query.
+
+The embedding model loader was changed to use an LRU cache, so the model is now loaded once per Python process and reused across queries.
+
+Retrieval quality remained unchanged after optimization:
+Hit@1: 1.000
+MRR: 1.000
+
+### Current Limitation
+The evaluation corpus is extremely small: 2 documents and 4 evaluation queries. A larger GitHub corpus containing commits, issues, pull requests, README/documentation changes, and other project events will be required for a meaningful retrieval benchmark.
+
+"@ | Add-Content docs/progress.md
