@@ -239,4 +239,119 @@ MRR: 1.000
 ### Current Limitation
 The evaluation corpus is extremely small: 2 documents and 4 evaluation queries. A larger GitHub corpus containing commits, issues, pull requests, README/documentation changes, and other project events will be required for a meaningful retrieval benchmark.
 
-"@ | Add-Content docs/progress.md
+## August 11, 2026 — Agentic Query Planning and Multi-Step Retrieval
+
+### Goal
+
+Extend the existing semantic RAG baseline into an agentic retrieval pipeline capable of decomposing broad project questions into focused investigation queries and collecting evidence across multiple retrieval calls.
+
+### Components Added
+
+* `src/projectpulse/planner.py`
+
+  * Deterministic query-planning baseline.
+  * Detects intents such as project changes, blockers, timelines, pull requests, features, and project status.
+  * Decomposes broad queries into focused retrieval sub-queries.
+
+* `src/projectpulse/agentic_retriever.py`
+
+  * Executes semantic retrieval for every planned sub-query.
+  * Aggregates retrieved evidence.
+  * Deduplicates repeated chunks using `chunk_id`.
+  * Tracks which investigation queries matched each chunk.
+  * Ranks evidence using query match count and semantic distance.
+
+* `src/projectpulse/evaluate_agentic_retrieval.py`
+
+  * Compares single-query semantic retrieval with multi-query agentic retrieval.
+  * Measures evidence coverage, retrieval calls, semantic distance, and latency.
+
+* `tests/test_planner.py`
+
+* `tests/test_agentic_retriever.py`
+
+### Bugs Found and Fixed
+
+#### 1. `ProjectPulse` incorrectly triggered pull-request intent
+
+A status query such as:
+
+`What is the current status of ProjectPulse?`
+
+was incorrectly classified as `pull_requests`.
+
+Cause:
+
+The planner originally searched for `"pr"` using substring matching. Since `ProjectPulse` begins with `"Pr"`, the abbreviation matched inside the project name.
+
+Fix:
+
+Replaced substring matching for `PR` and `PRs` with regex word-boundary matching.
+
+A regression test was added to ensure that the word `ProjectPulse` does not trigger pull-request intent.
+
+#### 2. Broad intent overrode specific intent
+
+The query:
+
+`Which PR was recently merged?`
+
+was initially classified as `project_changes` because the broad keyword `recently` was checked before the more specific pull-request intent.
+
+Fix:
+
+Intent priority was changed so specific intents such as pull requests, blockers, timeline, and features are checked before broad project-change intent.
+
+A regression test was added for this case.
+
+### Test Results
+
+Planner tests:
+
+`8/8 passed`
+
+Agentic retriever tests:
+
+`4/4 passed`
+
+The tests validate intent detection, query decomposition, empty-query handling, evidence deduplication, multi-query tracking, evidence ranking, and invalid retrieval parameters.
+
+### Baseline vs Agentic Retrieval Evaluation
+
+Queries evaluated: `3`
+
+| Metric                         | Baseline |   Agentic |
+| ------------------------------ | -------: | --------: |
+| Average unique evidence chunks |     2.00 |      2.00 |
+| Total retrieval calls          |        3 |        13 |
+| Average latency                | 52.64 ms | 199.17 ms |
+
+Evidence expansion:
+
+`0.00%`
+
+Agentic latency multiplier:
+
+`3.78x`
+
+### Interpretation
+
+Agentic retrieval successfully decomposed broad questions and executed multiple focused semantic searches, but it did not increase unique evidence coverage on the current corpus.
+
+The current vector store contains only two evidence chunks, meaning both baseline and agentic retrieval ultimately have access to the same limited evidence.
+
+Therefore, the experiment identified corpus coverage—not query decomposition—as the current bottleneck.
+
+The agentic approach also introduced a measurable performance trade-off:
+
+* Retrieval calls increased from 3 total baseline calls to 13 agentic calls.
+* Average latency increased from 52.64 ms to 199.17 ms.
+* Agentic retrieval was approximately 3.78× slower.
+
+This result establishes a measurable baseline for future experiments after the GitHub corpus is expanded with additional commits, issues, pull requests, and project documents.
+
+### Current Limitation
+
+The present two-chunk corpus is too small to fairly evaluate whether multi-query planning improves evidence recall or retrieval coverage.
+
+A larger and more diverse corpus is required before making claims about retrieval-quality improvement.
