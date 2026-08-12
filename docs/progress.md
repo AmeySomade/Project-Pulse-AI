@@ -355,3 +355,246 @@ This result establishes a measurable baseline for future experiments after the G
 The present two-chunk corpus is too small to fairly evaluate whether multi-query planning improves evidence recall or retrieval coverage.
 
 A larger and more diverse corpus is required before making claims about retrieval-quality improvement.
+
+## August 12, 2026 — MCP Tool Integration and LangGraph Orchestration
+
+### Goal
+
+Connect ProjectPulse's existing retrieval capabilities to the Model Context Protocol (MCP) and orchestrate those tools through LangGraph without rewriting the retrieval pipeline.
+
+### Components Added
+
+* `src/projectpulse/mcp_server.py`
+  * Added a local ProjectPulse MCP server using FastMCP.
+  * Exposes `search_project_history` for focused semantic retrieval.
+  * Exposes `investigate_project` for planner-driven multi-step retrieval.
+  * Uses `stdio` transport for local client/server communication.
+
+* `src/projectpulse/mcp_client.py`
+  * Added an MCP client using `MultiServerMCPClient`.
+  * Launches the ProjectPulse MCP server as a separate Python subprocess.
+  * Discovers MCP tools dynamically through the protocol.
+  * Loads discovered MCP tools as LangChain-compatible tools.
+  * Verified real MCP tool invocation over `stdio`.
+
+* `src/projectpulse/langgraph_agent.py`
+  * Added a LangGraph `StateGraph`.
+  * Reuses the existing deterministic ProjectPulse planner for intent detection.
+  * Routes focused/general questions to `search_project_history`.
+  * Routes complex project questions to `investigate_project`.
+  * Invokes the selected capability through the MCP tool interface rather than directly calling retrieval functions.
+
+* `tests/test_langgraph_agent.py`
+  * Added isolated LangGraph routing tests using lightweight fake MCP tools.
+  * Avoids launching ChromaDB, Sentence Transformers, and MCP subprocesses during every unit-test run.
+
+### Architecture
+
+Current execution path:
+
+`User Query -> LangGraph -> Planner -> Conditional Route -> MCP Tool -> Existing ProjectPulse Retrieval`
+
+Focused query path:
+
+`Query -> general intent -> search_project_history -> MCP -> semantic retriever`
+
+Complex query path:
+
+`Query -> status/changes/blockers/timeline/etc. -> investigate_project -> MCP -> planner + multi-query retrieval`
+
+### MCP Verification
+
+The MCP client successfully discovered both exposed ProjectPulse tools:
+
+* `search_project_history`
+* `investigate_project`
+
+Result:
+
+`2/2 expected MCP tools discovered`
+
+Real MCP invocation was verified for both capabilities.
+
+#### Direct Retrieval Test
+
+Query:
+
+`What work was done on GitHub integration?`
+
+Result:
+
+* MCP tool selected: `search_project_history`
+* Results returned: `2`
+* Rank 1 evidence: `feat: add authenticated GitHub repository integration`
+* Rank 1 semantic distance: `0.301940381526947`
+
+#### Multi-Step Investigation Test
+
+Query:
+
+`What changed in ProjectPulse and what is the current project status?`
+
+Planner result:
+
+* Detected intent: `status`
+* Generated sub-queries: `4`
+* Unique evidence chunks returned: `2`
+
+Result:
+
+`MCP CLIENT VERIFICATION PASSED`
+
+### LangGraph Routing Verification
+
+Two end-to-end graph routes were manually verified.
+
+#### Focused Query
+
+Query:
+
+`What work was done on GitHub integration?`
+
+Detected intent:
+
+`general`
+
+Selected MCP tool:
+
+`search_project_history`
+
+#### Complex Query
+
+Query:
+
+`What changed in ProjectPulse and what is the current project status?`
+
+Detected intent:
+
+`status`
+
+Selected MCP tool:
+
+`investigate_project`
+
+Result:
+
+`LANGGRAPH + MCP VERIFICATION PASSED`
+
+### Automated Testing
+
+New LangGraph routing tests:
+
+`4/4 passed`
+
+The tests validate:
+
+* General queries route to direct semantic retrieval.
+* Status queries route to multi-step investigation.
+* Missing required MCP capabilities fail fast.
+* Empty queries are rejected.
+
+Full ProjectPulse regression suite:
+
+`24/24 passed`
+
+Regression runtime:
+
+`5.49 seconds`
+
+No previously implemented ingestion, chunking, planner, or agentic-retrieval tests regressed after introducing MCP and LangGraph.
+
+### Design Decisions
+
+#### MCP wraps existing capabilities instead of replacing them
+
+The semantic retriever and agentic retriever remain the source of retrieval behavior.
+
+MCP provides a standardized tool boundary around those capabilities.
+
+This keeps ProjectPulse modular:
+
+`Orchestration != Tool Protocol != Retrieval Implementation`
+
+The retrieval layer can therefore evolve independently from the agent orchestration layer.
+
+#### LangGraph owns orchestration
+
+LangGraph is responsible for:
+
+* maintaining workflow state;
+* interpreting the planner result;
+* selecting the execution branch;
+* invoking the appropriate MCP capability.
+
+Retrieval logic remains outside the graph.
+
+#### ToolNode intentionally not used yet
+
+The current ProjectPulse version does not yet have an LLM producing native tool calls.
+
+Using LangGraph `ToolNode` at this stage would require manually manufacturing model-style tool-call messages.
+
+Instead, the current graph uses deterministic conditional routing based on the existing planner.
+
+When an LLM with native tool calling is introduced, the architecture can evolve to:
+
+`LLM -> tool call -> ToolNode -> MCP tool`
+
+without rewriting the MCP server or retrieval layer.
+
+#### Unit tests do not launch the real MCP stack
+
+Real MCP discovery and execution were verified separately through the integration client.
+
+LangGraph unit tests use fake MCP tools so the regression suite remains fast and deterministic rather than repeatedly starting:
+
+* an MCP subprocess;
+* ChromaDB;
+* Sentence Transformers.
+
+### Dependencies Added
+
+Pinned Day 4 dependencies:
+
+* `langgraph==1.2.11`
+* `langchain==1.3.15`
+* `langchain-mcp-adapters==0.3.2`
+* `mcp[cli]==1.29.0`
+
+### Issue / Learning
+
+Importing the MCP server produced a Pydantic settings warning related to an unresolved forward reference in the MCP dependency stack.
+
+The warning was non-fatal.
+
+Verification showed that:
+
+* the FastMCP server object was created successfully;
+* MCP tool discovery succeeded;
+* both MCP tools executed successfully;
+* LangGraph orchestration succeeded;
+* all automated tests passed.
+
+The warning is therefore recorded as a dependency-level observation rather than treated as an application failure.
+
+### Current Limitation
+
+Tool selection is currently deterministic.
+
+The existing ProjectPulse planner detects intent and LangGraph uses conditional edges to choose an MCP tool.
+
+An LLM is not yet autonomously reasoning over tool descriptions or generating native tool calls.
+
+The current implementation therefore establishes the MCP and LangGraph orchestration foundation without claiming fully autonomous LLM-driven tool selection.
+
+The retrieval corpus also remains limited to two indexed GitHub evidence chunks, so MCP and LangGraph improve architecture and extensibility but do not yet improve retrieval coverage.
+
+### Result
+
+ProjectPulse now has a functioning protocol-based agent architecture:
+
+`LangGraph orchestration -> MCP tools -> ProjectPulse retrieval`
+
+The system successfully crosses a real process boundary using MCP `stdio`, dynamically discovers available ProjectPulse tools, invokes them through the protocol, and routes user questions to the appropriate capability through LangGraph.
+
+This completes the MCP + LangGraph integration foundation.
