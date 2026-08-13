@@ -31,3 +31,6 @@ htmlcov/
 # Logs
 *.log
 data/chroma/
+
+# ProjectPulse runtime memory
+data/projectpulse_memory.json

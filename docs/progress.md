@@ -598,3 +598,294 @@ ProjectPulse now has a functioning protocol-based agent architecture:
 The system successfully crosses a real process boundary using MCP `stdio`, dynamically discovers available ProjectPulse tools, invokes them through the protocol, and routes user questions to the appropriate capability through LangGraph.
 
 This completes the MCP + LangGraph integration foundation.
+
+
+---
+
+## Day 5 - Selective Short-Term and Long-Term Memory
+
+### Objective
+
+Extend the existing ProjectPulse LangGraph + MCP architecture with memory while avoiding the common anti-pattern of storing every conversation message permanently.
+
+The memory system was designed around two different responsibilities:
+
+`short-term conversation context != persistent project knowledge`
+
+### Architecture
+
+The LangGraph workflow was extended from:
+
+`Planner -> MCP tool -> Result`
+
+to:
+
+`Load memory -> Planner -> MCP tool -> Update short-term memory -> Result`
+
+The memory layer contains two components.
+
+#### Short-Term Memory
+
+`ShortTermMemory` maintains a bounded window of recent user and assistant interactions.
+
+Properties:
+
+* exists only during the running Python process;
+* maintains recent conversational context;
+* automatically removes older entries when the configured limit is exceeded;
+* stores only a bounded representation of retrieval results to avoid uncontrolled context growth.
+
+The default LangGraph configuration keeps the six most recent conversation items.
+
+#### Long-Term Memory
+
+`MemoryStore` provides persistent JSON-backed memory.
+
+Long-term memory is intentionally selective.
+
+The current MVP stores information belonging to four categories:
+
+* decision;
+* blocker;
+* preference;
+* status.
+
+Examples of information worth persisting include architecture decisions, implementation blockers, persistent user preferences, and completed project milestones.
+
+Normal questions and conversational noise are not stored.
+
+### Selective Memory Policy
+
+A lightweight rule-based classifier currently determines whether information should enter long-term memory.
+
+Examples:
+
+`We decided to use MCP for tool integration.`
+
+is classified as:
+
+`decision`
+
+while:
+
+`What changed in ProjectPulse?`
+
+is not persisted.
+
+This prevents the memory store from becoming an unbounded transcript of every user interaction.
+
+### Persistent Memory Design
+
+Long-term memories are stored as structured records containing:
+
+* deterministic memory ID;
+* content;
+* category;
+* UTC creation timestamp;
+* source query;
+* optional metadata.
+
+Memory IDs are generated using a SHA-256 fingerprint derived from normalized content and category.
+
+This allows duplicate persistent memories to be detected without relying on random identifiers.
+
+Writes use a temporary JSON file followed by replacement of the target file so partially written memory files are less likely to corrupt the persistent store.
+
+### Memory Retrieval
+
+The current MVP uses lightweight token-overlap retrieval.
+
+For each user query:
+
+1. query tokens are extracted;
+2. stored memories are compared using token overlap;
+3. memories with no overlap are discarded;
+4. matching memories are ranked by overlap and recency;
+5. the top relevant memories are placed into LangGraph state.
+
+The graph now exposes:
+
+`recent_context`
+
+for temporary conversation history,
+
+`relevant_memories`
+
+for previously stored long-term knowledge relevant to the query, and
+
+`stored_memory`
+
+when the current user input creates a new persistent memory.
+
+### LangGraph Integration
+
+A new `load_memory` node executes before planning.
+
+It:
+
+1. validates the incoming query;
+2. retrieves relevant existing long-term memories;
+3. stores the current user turn in short-term memory;
+4. applies the selective persistence policy;
+5. exposes memory context to the remaining graph.
+
+After either MCP execution branch, an `update_short_term_memory` node stores a bounded representation of the tool result.
+
+The existing MCP routing logic remains unchanged.
+
+General queries continue to use:
+
+`search_project_history`
+
+while complex project queries continue to use:
+
+`investigate_project`.
+
+Memory therefore extends orchestration without coupling itself to the MCP transport or retrieval implementation.
+
+### Automated Verification
+
+Memory unit tests:
+
+`11 passed`
+
+The tests cover:
+
+* bounded short-term memory;
+* decision classification;
+* blocker classification;
+* preference classification;
+* status classification;
+* rejection of normal questions;
+* rejection of irrelevant statements;
+* persistence across MemoryStore instances;
+* memory deduplication;
+* selective persistence;
+* relevant memory search.
+
+LangGraph memory integration tests:
+
+`5 passed`
+
+The integration tests verify:
+
+* relevant long-term memory enters graph state;
+* important user statements are persisted;
+* normal questions are not persisted;
+* short-term context survives across graph calls;
+* invalid memory retrieval configuration is rejected.
+
+Full regression suite:
+
+`40 passed`
+
+No existing ingestion, chunking, planner, agentic retrieval, MCP-routing, or LangGraph behavior regressed after adding memory.
+
+### Import-Path Issue
+
+During Day 5 testing, the project exposed inconsistent historical test imports.
+
+Some tests imported:
+
+`src.projectpulse...`
+
+while newer application-style imports use:
+
+`projectpulse...`
+
+Temporarily setting `PYTHONPATH=src` fixed the new imports but caused older `src.projectpulse` imports to fail.
+
+The root cause was therefore test import configuration rather than memory implementation.
+
+A project-level `pytest.ini` was added with both the repository root and `src` directory on the pytest Python path.
+
+This allows both historical and current import styles to work while preserving the existing test suite.
+
+A future cleanup can standardize all imports to the package-style:
+
+`projectpulse...`
+
+### Runtime Memory Handling
+
+The persistent runtime file:
+
+`data/projectpulse_memory.json`
+
+is excluded from Git.
+
+This prevents machine-specific conversational memory from being committed to the repository while keeping static ingestion evidence such as the existing GitHub document corpus versionable.
+
+### Design Decisions
+
+#### Memory is separate from retrieval
+
+Project history retrieved from GitHub and agent memory represent different information sources.
+
+GitHub retrieval answers:
+
+`What evidence exists in the project history?`
+
+Memory answers:
+
+`What useful context has the agent learned previously?`
+
+They therefore remain separate components.
+
+#### Memory does not modify MCP queries yet
+
+Relevant memories are currently loaded into LangGraph state but are not blindly concatenated into retrieval queries.
+
+This avoids contaminating semantic retrieval with potentially unrelated conversation history.
+
+A later answer-synthesis layer can explicitly combine:
+
+`retrieved project evidence + relevant memory + recent context`
+
+when generating a final response.
+
+#### JSON persistence is intentional for the MVP
+
+The current memory corpus is small.
+
+A JSON-backed implementation keeps behavior:
+
+* inspectable;
+* deterministic;
+* easy to test;
+* easy to debug.
+
+Moving immediately to another vector database would add infrastructure without yet demonstrating measurable retrieval benefit.
+
+The interface allows the persistence and retrieval implementation to be replaced later.
+
+### Current Limitations
+
+The long-term memory classifier is currently rule based.
+
+It may miss useful information that does not contain one of the configured signals, and keyword matching can occasionally classify ambiguous statements incorrectly.
+
+Long-term memory retrieval currently uses token overlap rather than embeddings.
+
+Memory does not yet have:
+
+* semantic similarity retrieval;
+* importance scoring;
+* memory decay;
+* conflict resolution;
+* entity/user namespaces;
+* LLM-based memory extraction;
+* memory-aware answer synthesis.
+
+These are intentionally left as future improvements rather than being presented as capabilities already implemented.
+
+### Result
+
+ProjectPulse now supports both temporary conversational context and selective persistent project memory.
+
+The architecture is now:
+
+`LangGraph orchestration -> memory context + MCP tools -> ProjectPulse retrieval`
+
+Memory is integrated into the workflow without replacing or coupling itself to the existing MCP and retrieval layers.
+
+This completes the Day 5 memory foundation.
