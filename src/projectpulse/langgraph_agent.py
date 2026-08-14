@@ -3,6 +3,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Literal, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.graph import END, START, StateGraph
@@ -19,6 +20,7 @@ from projectpulse.planner import create_plan
 # ---------------------------------------------------------
 # LangGraph state
 # ---------------------------------------------------------
+
 
 class ProjectPulseState(TypedDict, total=False):
     """
@@ -41,6 +43,7 @@ class ProjectPulseState(TypedDict, total=False):
 # Helpers
 # ---------------------------------------------------------
 
+
 def _serialize_result_for_short_term(
     result: Any,
     max_chars: int = 1200,
@@ -50,7 +53,7 @@ def _serialize_result_for_short_term(
     temporary conversation memory.
 
     Raw retrieval responses can become large, so short-term
-    memory intentionally stores only a bounded representation.
+    memory stores only a bounded representation.
     """
 
     if isinstance(result, str):
@@ -77,6 +80,7 @@ def _serialize_result_for_short_term(
 # Graph construction
 # ---------------------------------------------------------
 
+
 def build_projectpulse_graph(
     tools: list[BaseTool],
     memory_store: MemoryStore | None = None,
@@ -86,6 +90,12 @@ def build_projectpulse_graph(
     """
     Build a LangGraph workflow around MCP-discovered tools
     with short-term and selective long-term memory.
+
+    LangGraph automatically traces graph nodes.
+
+    RunnableConfig is passed directly into MCP-discovered
+    LangChain tools so their runs remain connected to the
+    LangGraph parent trace, including on Python 3.10.
     """
 
     if memory_search_limit <= 0:
@@ -112,8 +122,10 @@ def build_projectpulse_graph(
             f"Missing required MCP tools: {missing_tools}"
         )
 
-    # Use supplied stores during testing or custom execution.
-    # Otherwise use the normal ProjectPulse defaults.
+    # -----------------------------------------------------
+    # Memory dependencies
+    # -----------------------------------------------------
+
     long_term_memory = (
         memory_store
         if memory_store is not None
@@ -127,20 +139,19 @@ def build_projectpulse_graph(
     )
 
     # -----------------------------------------------------
-    # Node 1: Load and selectively persist memory
+    # Node 1: Load memory
     # -----------------------------------------------------
 
     def load_memory(
         state: ProjectPulseState,
     ) -> dict[str, Any]:
         """
-        Load relevant context before planning.
+        Load relevant persistent memories before planning.
 
-        The user's current message is always kept in
-        short-term memory.
+        The current user query is always stored temporarily.
 
-        Long-term storage remains selective: only messages
-        matching the memory policy are persisted.
+        Only information matching the selective-memory policy
+        is persisted into long-term memory.
         """
 
         query = state["query"].strip()
@@ -150,8 +161,7 @@ def build_projectpulse_graph(
                 "Query cannot be empty."
             )
 
-        # Retrieve OLD long-term knowledge before deciding
-        # whether the current message should also be stored.
+        # Search OLD long-term memories first.
         relevant_records = long_term_memory.search(
             query,
             limit=memory_search_limit,
@@ -162,14 +172,13 @@ def build_projectpulse_graph(
             for record in relevant_records
         ]
 
-        # Current conversation turn enters temporary memory.
+        # Current user message enters short-term memory.
         conversation_memory.add(
             "user",
             query,
         )
 
-        # Declarative decisions, blockers, preferences or
-        # status updates may enter persistent memory.
+        # Persist only important user information.
         remembered = remember_if_important(
             store=long_term_memory,
             text=query,
@@ -203,8 +212,8 @@ def build_projectpulse_graph(
         state: ProjectPulseState,
     ) -> dict[str, Any]:
         """
-        Detect the user's intent and select the appropriate
-        MCP capability.
+        Detect query intent and choose the appropriate
+        MCP retrieval capability.
         """
 
         query = state["query"].strip()
@@ -216,15 +225,15 @@ def build_projectpulse_graph(
 
         plan = create_plan(query)
 
-        # General/focused questions only need one
-        # semantic retrieval call.
+        # General/focused questions only need direct
+        # semantic retrieval.
         if plan.intent == "general":
             selected_tool = (
                 "search_project_history"
             )
 
-        # Complex project questions benefit from the
-        # planner + multi-query investigation pipeline.
+        # Complex project questions use the multi-query
+        # investigation pipeline.
         else:
             selected_tool = (
                 "investigate_project"
@@ -247,7 +256,8 @@ def build_projectpulse_graph(
         "investigation",
     ]:
         """
-        Convert selected MCP tool into a graph branch.
+        Convert the selected MCP capability into the
+        appropriate LangGraph branch.
         """
 
         if (
@@ -259,14 +269,19 @@ def build_projectpulse_graph(
         return "investigation"
 
     # -----------------------------------------------------
-    # Node 3A: Direct semantic retrieval through MCP
+    # Node 3A: Direct semantic retrieval
     # -----------------------------------------------------
 
     async def direct_search(
         state: ProjectPulseState,
+        config: RunnableConfig,
     ) -> dict[str, Any]:
         """
-        Invoke the direct-search MCP tool.
+        Execute focused semantic retrieval through the real
+        MCP-discovered LangChain tool.
+
+        Passing config directly preserves LangSmith parent/
+        child trace relationships.
         """
 
         top_k = state.get(
@@ -280,7 +295,8 @@ def build_projectpulse_graph(
             {
                 "query": state["query"],
                 "top_k": top_k,
-            }
+            },
+            config=config,
         )
 
         return {
@@ -288,14 +304,19 @@ def build_projectpulse_graph(
         }
 
     # -----------------------------------------------------
-    # Node 3B: Multi-step investigation through MCP
+    # Node 3B: Multi-step investigation
     # -----------------------------------------------------
 
     async def investigation(
         state: ProjectPulseState,
+        config: RunnableConfig,
     ) -> dict[str, Any]:
         """
-        Invoke the multi-step investigation MCP tool.
+        Execute the multi-query ProjectPulse investigation
+        through the real MCP-discovered LangChain tool.
+
+        Passing RunnableConfig directly allows the MCP tool
+        run to nest under this LangGraph node in LangSmith.
         """
 
         top_k = state.get(
@@ -309,7 +330,8 @@ def build_projectpulse_graph(
             {
                 "query": state["query"],
                 "top_k_per_query": top_k,
-            }
+            },
+            config=config,
         )
 
         return {
@@ -317,15 +339,15 @@ def build_projectpulse_graph(
         }
 
     # -----------------------------------------------------
-    # Node 4: Update temporary conversation memory
+    # Node 4: Update short-term memory
     # -----------------------------------------------------
 
     def update_short_term_memory(
         state: ProjectPulseState,
     ) -> dict[str, Any]:
         """
-        Store a bounded representation of the retrieval
-        result in short-term conversation memory.
+        Store a bounded representation of the tool result
+        in temporary conversation memory.
         """
 
         result_text = _serialize_result_for_short_term(
@@ -345,7 +367,7 @@ def build_projectpulse_graph(
         }
 
     # -----------------------------------------------------
-    # Assemble graph
+    # Assemble LangGraph
     # -----------------------------------------------------
 
     builder = StateGraph(
@@ -415,8 +437,9 @@ def build_projectpulse_graph(
 
 
 # ---------------------------------------------------------
-# Demo
+# Manual verification
 # ---------------------------------------------------------
+
 
 async def main():
     client = create_mcp_client()
@@ -428,6 +451,7 @@ async def main():
     print("=" * 70)
 
     memory_store = MemoryStore()
+
     short_term_memory = ShortTermMemory(
         max_items=6
     )
@@ -497,19 +521,19 @@ async def main():
                     f"{result['stored_memory']['category']}"
                 )
 
-            print(
-                "\nTool result:"
-            )
+            print("\nTool result:")
 
             print(
                 result["result"]
             )
 
     print("\n" + "=" * 70)
+
     print(
         "LANGGRAPH + MCP + MEMORY "
         "VERIFICATION PASSED"
     )
+
     print("=" * 70)
 
 

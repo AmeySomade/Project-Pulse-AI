@@ -11,13 +11,20 @@ class FakeMCPTool:
 
     It records every invocation so tests can verify that
     LangGraph routed the query to the correct MCP capability.
+
+    The optional config argument mirrors the Runnable/LangChain
+    tool interface used by the real MCP-discovered tools.
     """
 
     def __init__(self, name: str):
         self.name = name
         self.calls = []
 
-    async def ainvoke(self, arguments):
+    async def ainvoke(
+        self,
+        arguments,
+        config=None,
+    ):
         self.calls.append(arguments)
 
         return {
