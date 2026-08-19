@@ -1158,6 +1158,142 @@ The system can show:
 
 The implementation also produced a real debugging case involving Python 3.10 async trace propagation and a test-double interface regression, both of which were diagnosed and fixed without changing application behavior.
 
+## Day 7 — Streamlit Investigation UI and MVP Completion
+
+### Goal
+
+Add a usable frontend over the already tested ProjectPulse execution path without moving retrieval, routing, or memory logic into the presentation layer.
+
+The UI had to call the real pipeline:
+
+`Streamlit -> LangGraph -> MCP stdio tool -> ProjectPulse retrieval`
+
+rather than bypassing MCP and invoking the retriever directly.
+
+### Components Added
+
+* `streamlit_app.py`
+  * Adds a chat-style investigation interface.
+  * Provides sample project questions and typed chat input.
+  * Exposes configurable retrieval depth.
+  * Displays detected intent, selected MCP tool, evidence count, and relevant-memory count.
+  * Displays investigation sub-queries for multi-step questions.
+  * Renders ranked evidence with metadata, semantic distance, match count, content, and source links.
+  * Preserves bounded short-term memory across Streamlit reruns.
+  * Allows the visible chat and temporary session context to be cleared without deleting persistent memory.
+  * Clearly labels the current output as retrieved evidence rather than claiming LLM answer synthesis.
+
+* `src/projectpulse/ui_service.py`
+  * Provides the async boundary between Streamlit and the real MCP/LangGraph stack.
+  * Opens a ProjectPulse MCP session and discovers the MCP tools.
+  * Builds the existing LangGraph with the session-scoped short-term memory and JSON-backed persistent memory.
+  * Invokes the graph and returns its state to the UI.
+  * Normalizes dictionary, JSON-text, and MCP text-block result representations.
+  * Extracts evidence and investigation plans independently from Streamlit rendering.
+  * Produces factual retrieval summaries without presenting generated conclusions.
+
+* `.streamlit/config.toml`
+  * Adds a consistent dark theme.
+  * Disables anonymous usage-stat collection.
+
+* `tests/test_ui_service.py`
+  * Tests MCP result normalization.
+  * Tests direct-search and investigation evidence extraction.
+  * Tests factual result summaries.
+  * Tests validation before MCP startup.
+  * Verifies the UI service wires the MCP session, graph, query state, and memory dependencies correctly.
+
+* `tests/test_streamlit_app.py`
+  * Uses Streamlit's application test framework to verify the initial app renders without an exception.
+
+### Dependency Decision
+
+Added:
+
+`streamlit==1.61.1`
+
+The selected stable release supports Python 3.10, matching the local ProjectPulse development environment.
+
+### Separation of Responsibilities
+
+The UI does not contain retrieval or routing logic.
+
+`streamlit_app.py` owns:
+
+* session-state presentation;
+* user controls;
+* evidence rendering;
+* user-facing error handling.
+
+`ui_service.py` owns:
+
+* async MCP session lifecycle;
+* MCP tool discovery;
+* LangGraph construction and invocation;
+* adapter-result normalization.
+
+The existing graph continues to own:
+
+* memory loading;
+* intent detection;
+* conditional tool routing;
+* short-term-memory updates.
+
+This keeps the tested backend behavior unchanged while allowing the frontend to evolve separately.
+
+### Honest Output Boundary
+
+ProjectPulse does not yet contain an LLM answer-synthesis step.
+
+The Streamlit interface therefore reports:
+
+* how many queries were executed;
+* how many evidence items were retrieved;
+* what evidence content was found;
+* how the graph routed the request.
+
+It does not convert retrieved evidence into an unverified natural-language conclusion.
+
+### Automated Verification
+
+UI-specific tests:
+
+`10 passed`
+
+Full regression suite:
+
+`50 passed`
+
+Full-suite runtime in the final verification environment:
+
+`6.59 seconds`
+
+All 40 previously existing ingestion, retrieval, planner, LangGraph, MCP-routing, memory, and observability regression tests remained green.
+
+### Runtime Verification
+
+The Streamlit application was started in headless mode and its health endpoint was probed.
+
+Health response:
+
+`ok`
+
+This verified that the final app entry point starts successfully in addition to passing the simulated initial-render test.
+
+### Current Limitation
+
+The frontend makes the existing system usable but does not change the two-chunk retrieval corpus. Evidence coverage remains the main quality bottleneck.
+
+The current UI service also opens an MCP session for each submitted question. This is simple and reliable for the local MVP, but a future deployed version should evaluate a longer-lived service process to reduce repeated startup overhead.
+
+### Result
+
+ProjectPulse now has a complete local MVP path:
+
+`User -> Streamlit -> LangGraph -> memory + planner -> MCP -> retrieval -> grounded evidence UI`
+
+The final interface exposes both user-facing project evidence and recruiter-relevant engineering details such as routing, tool selection, memory behavior, investigation plans, and raw tool results.
+
 All existing tests remain green:
 
 `40 passed`
